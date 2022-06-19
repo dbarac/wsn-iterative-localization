@@ -46,19 +46,20 @@ class IterativeLocalization(NodeAlgorithm):
                 common_neigh, dist_12 = all_common[0]
                 node.memory['commonNeighborLists'].pop(common_neigh)
                 dist_02 = node.memory['neighborDistances'][common_neigh]
-                print(dist_01, dist_02, dist_12)
 
                 # define initial triangle
                 rigid_segment = self.define_initial_rigid_segment(
                     node, dist_01, dist_02, dist_12, neigh, common_neigh
                 )
-                localized_neighbors = {node for (node,pos) in rigid_segment}
-                for neigh, neigh_pos in rigid_segment:
+                # add more neighbors to rigid_segment, if possible
+                self.add_neighbors_to_rigid_segment(node, rigid_segment)
+
+                localized_neighbors = {node for node in rigid_segment.keys()}
+                for neigh, neigh_pos in rigid_segment.items():
                     node.send(Message(
                         destination=neigh, header='OwnPosition',
                         data=(neigh_pos, localized_neighbors)
                     ))
-
                 remaining_neighbors = set(node.memory[self.neighborsKey]) - localized_neighbors
                 node.send(Message(
                     header='NeighborPosition', destination=remaining_neighbors,
@@ -86,9 +87,9 @@ class IterativeLocalization(NodeAlgorithm):
             pos, localized_nodes = message.data
             node.memory['position'] = pos
             localized_nodes.add(message.source)
-            remaining_neighbors = set(node.memory[self.neighborsKey]) - localized_nodes
+            nonlocalized_neighbors= set(node.memory[self.neighborsKey]) - localized_nodes
             node.send(Message(
-                header='NeighborPosition', destination=remaining_neighbors,
+                header='NeighborPosition', destination=nonlocalized_neighbors,
                 data=node.memory['position']
             ))
             node.status = 'LOCALIZED'
@@ -116,18 +117,21 @@ class IterativeLocalization(NodeAlgorithm):
         Arbitrarily define an initial rigid segment (triangle) in a way that
         the distances between nodes are the same as measured distances (r_01, r_02, r_12).
         After defining the initial triangle, the rest of the nodes in the
-        network can be localized with the trilateration process.
+        network can be localized by trilaterating with nodes from the rigid segment.
         """
         initiator.memory['position'] = (0, 0) # assume initiator position
         x1, y1 = (r_01, 0)
         x2 = (r_01 ** 2 + r_02 ** 2 - r_12 ** 2) / (2 * r_01)
         y2 = math.sqrt(r_02 ** 2 - x2 ** 2)
         rigid_segment = {
-            (neigh_1, (x1, y1)), (neigh_2, (x2, y2))
+            neigh_1: (x1, y1), neigh_2: (x2, y2)
         }
         return rigid_segment
 
     def trilaterate(self, x1, y1, x2, y2, x3, y3, r1, r2, r3):
+        """
+        Determine node position based on distances to three known points.
+        """
         A = -2 * x1 + 2 * x2
         B = -2 * y1 + 2 * y2
         C = r1 ** 2 - r2 ** 2 - x1 ** 2 + x2 ** 2 - y1 ** 2 + y2 ** 2
@@ -137,6 +141,29 @@ class IterativeLocalization(NodeAlgorithm):
         x = (C * E - F * B) / (E * A - B * F)
         y = (C -A * x) / B
         return (x, y)
+
+    def add_neighbors_to_rigid_segment(self, initiator, rigid_segment):
+        """
+        Localize initiator neighbors if they have enough neighbors
+        in rigid_segment.
+        """
+        rigid_segment_updated = True
+        while rigid_segment_updated:
+            added_nodes = []
+            rigid_segment_updated = False
+            for neigh, common in initiator.memory['commonNeighborLists'].items():
+                rigid_common = [
+                    (n, n_dist) for (n, n_dist) in common if n in rigid_segment.keys()
+                ]
+                if len(rigid_common) >= 2:
+                    # localize neigh (trilaterate with initiator and two more nodes from rigid_segment)
+                    (x1, y1), r1 = initiator.memory['position'], initiator.memory['neighborDistances'][neigh]
+                    (x2, y2), r2 = rigid_segment[rigid_common[0][0]], rigid_common[0][1]
+                    (x3, y3), r3 = rigid_segment[rigid_common[1][0]], rigid_common[1][1]
+                    rigid_segment[neigh] = trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3)
+                    rigid_segment_updated = True
+            for node in added_nodes:
+                node.memory['commonNeighborLists'].pop(node)
 
     STATUS = {
         'INITIATOR': initiator,
