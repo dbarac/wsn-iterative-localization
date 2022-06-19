@@ -16,6 +16,7 @@ class IterativeLocalization(NodeAlgorithm):
             # initialize memory and node status
             node.memory[self.neighborsKey] = node.compositeSensor.read()['Neighbors']
             node.memory['neighborDistances'] = node.compositeSensor.read()['Dist']
+            node.memory['neighborPositions'] = {}
             node.memory['position'] = None
             node.status = 'WAITING_FOR_FIX'
         ini_node = self.network.nodes()[0] # any node can be the initiator
@@ -51,13 +52,14 @@ class IterativeLocalization(NodeAlgorithm):
                 rigid_segment = self.define_initial_rigid_segment(
                     node, dist_01, dist_02, dist_12, neigh, common_neigh
                 )
+                localized_neighbors = {node for (node,pos) in rigid_segment}
                 for neigh, neigh_pos in rigid_segment:
                     node.send(Message(
-                        destination=neigh, header='OwnPosition', data=neigh_pos
+                        destination=neigh, header='OwnPosition',
+                        data=(neigh_pos, localized_neighbors)
                     ))
 
-                rigid_nodes = {node for (node,pos) in rigid_segment}
-                remaining_neighbors = set(node.memory[self.neighborsKey]) - rigid_nodes
+                remaining_neighbors = set(node.memory[self.neighborsKey]) - localized_neighbors
                 node.send(Message(
                     header='NeighborPosition', destination=remaining_neighbors,
                     data=node.memory['position']
@@ -66,17 +68,6 @@ class IterativeLocalization(NodeAlgorithm):
                 node.status = 'LOCALIZED'
 
     def waiting_for_fix(self, node, message):
-        #if message.header == 'Information':
-        #    node.memory[self.informationKey] = message.data
-        #    destination_nodes = list(node.memory[self.neighborsKey])
-        #    # send to every neighbor-sender
-        #    destination_nodes.remove(message.source)
-        #    if len(destination_nodes) > 0:
-        #        node.send(Message(
-        #            destination=destination_nodes,
-        #            header='Information',
-        #            data=message.data
-        #        ))
         if message.header == 'CommonNeighborQuery':
             initiator_neighbors = set(message.data)
             common_neighbors = set(
@@ -92,9 +83,30 @@ class IterativeLocalization(NodeAlgorithm):
                 data=common_neighbors
             ))
         elif message.header == 'OwnPosition':
-            node.memory['position'] = message.data
-            # TODO: update (send pos to neighbors, but not to already localized ones
+            pos, localized_nodes = message.data
+            node.memory['position'] = pos
+            localized_nodes.add(message.source)
+            remaining_neighbors = set(node.memory[self.neighborsKey]) - localized_nodes
+            node.send(Message(
+                header='NeighborPosition', destination=remaining_neighbors,
+                data=node.memory['position']
+            ))
             node.status = 'LOCALIZED'
+        elif message.header == 'NeighborPosition':
+            node.memory['neighborPositions'][message.source] = message.data
+            if len(node.memory['neighborPositions']) == 3:
+                n1, n2, n3 = node.memory['neighborPositions'].keys()
+                (x1, y1), (x2, y2), (x3, y3) = node.memory['neighborPositions'].values()
+                r1, r2, r3 = (
+                    node.memory['neighborDistances'][neigh] for neigh in (n1, n2, n3)
+                )
+                node.memory['position'] = trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3)
+                nonlocalized_neighbors = set(node.memory[self.neighborsKey]) - {n1, n2, n3}
+                node.send(Message(
+                    header='NeighborPosition', destination=nonlocalized_neighbors,
+                    data=node.memory['position']
+                ))
+                node.status = 'LOCALIZED'
 
     def localized(self, node, message):
         pass
@@ -106,7 +118,7 @@ class IterativeLocalization(NodeAlgorithm):
         After defining the initial triangle, the rest of the nodes in the
         network can be localized with the trilateration process.
         """
-        initiator.memory['position'] = (0,0) # assume initiator position
+        initiator.memory['position'] = (0, 0) # assume initiator position
         x1, y1 = (r_01, 0)
         x2 = (r_01 ** 2 + r_02 ** 2 - r_12 ** 2) / (2 * r_01)
         y2 = math.sqrt(r_02 ** 2 - x2 ** 2)
@@ -114,6 +126,17 @@ class IterativeLocalization(NodeAlgorithm):
             (neigh_1, (x1, y1)), (neigh_2, (x2, y2))
         }
         return rigid_segment
+
+    def trilaterate(self, x1, y1, x2, y2, x3, y3, r1, r2, r3):
+        A = -2 * x1 + 2 * x2
+        B = -2 * y1 + 2 * y2
+        C = r1 ** 2 - r2 ** 2 - x1 ** 2 + x2 ** 2 - y1 ** 2 + y2 ** 2
+        D = -2 * x2 + 2 * x3
+        E = -2 * y2 + 2 * y3
+        F = r2 ** 2 - r3 ** 2 - x2 ** 2 + x3 ** 2 - y2 ** 2 + y3 ** 2
+        x = (C * E - F * B) / (E * A - B * F)
+        y = (C -A * x) / B
+        return (x, y)
 
     STATUS = {
         'INITIATOR': initiator,
