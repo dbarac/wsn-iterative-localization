@@ -6,8 +6,16 @@ import math
 class IterativeLocalization(NodeAlgorithm):
     """
     Iterative, trilateration-based distributed localization algorithm.
-
     Assumes that the network is globaly rigid (localizable).
+
+    A distance sensor should be added to all nodes in the network
+    before running the algorithm:
+    >>> import scipy.stats
+    >>> from pymote.sensor import DistSensor
+
+    >>> trueDistSensor = DistSensor({'pf': scipy.stats.norm, 'scale': 0 }) # no measurement noise
+    >>> for n in net.nodes():
+    >>>         n.compositeSensor = ('NeighborsSensor', trueDistSensor)
     """
     default_params = {'neighborsKey': 'Neighbors'}
 
@@ -101,7 +109,7 @@ class IterativeLocalization(NodeAlgorithm):
                 r1, r2, r3 = (
                     node.memory['neighborDistances'][neigh] for neigh in (n1, n2, n3)
                 )
-                node.memory['position'] = trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3)
+                node.memory['position'] = self.trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3)
                 nonlocalized_neighbors = set(node.memory[self.neighborsKey]) - {n1, n2, n3}
                 node.send(Message(
                     header='NeighborPosition', destination=nonlocalized_neighbors,
@@ -138,9 +146,25 @@ class IterativeLocalization(NodeAlgorithm):
         D = -2 * x2 + 2 * x3
         E = -2 * y2 + 2 * y3
         F = r2 ** 2 - r3 ** 2 - x2 ** 2 + x3 ** 2 - y2 ** 2 + y3 ** 2
-        x = (C * E - F * B) / (E * A - B * F)
-        y = (C -A * x) / B
+        x = (C * E - F * B) / (E * A - B * D)
+        #y = (C - A * x) / B
+        y = (C * D - A * F) / (B * D - A * E)
         return (x, y)
+
+    #def trilaterate2(self, x1, y1, x2, y2, x3, y3, r1, r2, r3):
+    #    """
+    #    Determine node position based on distances to three known points.
+    #    """
+    #    A = 2*x2 - 2*x1
+    #    B = 2*y2 - 2*y1
+    #    C = r1**2 - r2**2 - x1**2 + x2**2 - y1**2 + y2**2
+    #    D = 2*x3 - 2*x2
+    #    E = 2*y3 - 2*y2
+    #    F = r2**2 - r3**2 - x2**2 + x3**2 - y2**2 + y3**2
+    #    x = (C*E - F*B) / (E*A - B*D)
+    #    #y = (C*D - A*F) / (B*D - A*E)
+    #    y = (C - A * x) / B
+    #    return x,y
 
     def add_neighbors_to_rigid_segment(self, initiator, rigid_segment):
         """
@@ -156,14 +180,15 @@ class IterativeLocalization(NodeAlgorithm):
                     (n, n_dist) for (n, n_dist) in common if n in rigid_segment.keys()
                 ]
                 if len(rigid_common) >= 2:
-                    # localize neigh (trilaterate with initiator and two more nodes from rigid_segment)
+                    # localize neigh (trilaterate with initiator and two more nodes from rigid_common)
                     (x1, y1), r1 = initiator.memory['position'], initiator.memory['neighborDistances'][neigh]
                     (x2, y2), r2 = rigid_segment[rigid_common[0][0]], rigid_common[0][1]
                     (x3, y3), r3 = rigid_segment[rigid_common[1][0]], rigid_common[1][1]
-                    rigid_segment[neigh] = trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3)
+                    rigid_segment[neigh] = self.trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3)
+                    added_nodes.append(neigh)
                     rigid_segment_updated = True
             for node in added_nodes:
-                node.memory['commonNeighborLists'].pop(node)
+                initiator.memory['commonNeighborLists'].pop(node)
 
     STATUS = {
         'INITIATOR': initiator,
