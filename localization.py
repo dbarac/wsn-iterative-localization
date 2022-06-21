@@ -1,5 +1,6 @@
 from pymote.algorithm import NodeAlgorithm
 from pymote.message import Message
+import numpy as np
 import math
 
 
@@ -13,9 +14,9 @@ class IterativeLocalization(NodeAlgorithm):
     >>> import scipy.stats
     >>> from pymote.sensor import DistSensor
 
-    >>> trueDistSensor = DistSensor({'pf': scipy.stats.norm, 'scale': 0 }) # no measurement noise
+    >>> true_dist_sensor = DistSensor({'pf': scipy.stats.norm, 'scale': 0 }) # no measurement noise
     >>> for n in net.nodes():
-    >>>         n.compositeSensor = ('NeighborsSensor', trueDistSensor)
+    >>>         n.compositeSensor = ('NeighborsSensor', true_dist_sensor)
     """
     default_params = {'neighborsKey': 'Neighbors'}
 
@@ -147,24 +148,8 @@ class IterativeLocalization(NodeAlgorithm):
         E = -2 * y2 + 2 * y3
         F = r2 ** 2 - r3 ** 2 - x2 ** 2 + x3 ** 2 - y2 ** 2 + y3 ** 2
         x = (C * E - F * B) / (E * A - B * D)
-        #y = (C - A * x) / B
         y = (C * D - A * F) / (B * D - A * E)
         return (x, y)
-
-    #def trilaterate2(self, x1, y1, x2, y2, x3, y3, r1, r2, r3):
-    #    """
-    #    Determine node position based on distances to three known points.
-    #    """
-    #    A = 2*x2 - 2*x1
-    #    B = 2*y2 - 2*y1
-    #    C = r1**2 - r2**2 - x1**2 + x2**2 - y1**2 + y2**2
-    #    D = 2*x3 - 2*x2
-    #    E = 2*y3 - 2*y2
-    #    F = r2**2 - r3**2 - x2**2 + x3**2 - y2**2 + y3**2
-    #    x = (C*E - F*B) / (E*A - B*D)
-    #    #y = (C*D - A*F) / (B*D - A*E)
-    #    y = (C - A * x) / B
-    #    return x,y
 
     def add_neighbors_to_rigid_segment(self, initiator, rigid_segment):
         """
@@ -195,3 +180,73 @@ class IterativeLocalization(NodeAlgorithm):
         'WAITING_FOR_FIX': waiting_for_fix,
         'LOCALIZED': localized,
     }
+
+
+def network_is_rigid(net):
+    cols = len(net.nodes()) * 2
+    rows = len(net.edges())
+    rigidity_mat = np.zeros((rows, cols))
+    for n in net.nodes():
+        n.id = n.id - 1 # start ids from 0 to make matrix indexing easier
+    for i, (n_i, n_j) in enumerate(net.edges()):
+        rigidity_mat[i, n_i.id*2:n_i.id*2+2] = net.pos[n_i] - net.pos[n_j]
+        rigidity_mat[i, n_j.id*2:n_j.id*2+2] = net.pos[n_j] - net.pos[n_i]
+
+    for n in net.nodes():
+        n.id = n.id + 1 # set id to original value
+    if np.linalg.matrix_rank(rigidity_mat) == 2 * len(net.nodes()) - 3:
+        print("Network is rigid")
+        return True
+    else:
+        print("Network is not rigid")
+        return False
+
+
+def network_is_generically_globaly_rigid(net):
+    """
+    Test if a network is generically globally rigid, ie. localizable.
+    """
+    remaining_nodes = set(net.nodes())
+    edges = list(net.edges())
+
+    neighbors = lambda node: list(node.compositeSensor.read()['Neighbors'])
+
+    found_initial_rigid_segment = False
+    ini = net.nodes()[0]
+    rigid_segment = {ini}
+    for i in neighbors(ini):
+        if found_initial_rigid_segment:
+            break
+        for j in neighbors(ini):
+            if (i, j) in edges:
+                rigid_segment.update({i, j})
+                remaining_nodes = remaining_nodes - {ini, i, j}
+
+                found_initial_rigid_segment = True
+                break
+
+    if not found_initial_rigid_segment:
+        print("Network is not generically globally rigid")
+        return False
+
+    updated_rigid_segment = True
+    while updated_rigid_segment:
+        added = set()
+        updated_rigid_segment = False
+        for node in remaining_nodes:
+            rigid_neighbors = [
+                n for n in neighbors(node) if n in rigid_segment
+            ]
+            if len(rigid_neighbors) >= 3:
+                rigid_segment.add(node)
+                added.add(node)
+                updated_rigid_segment = True
+        remaining_nodes = remaining_nodes - added
+
+    if len(remaining_nodes) > 0:
+        print("Network is not generically globally rigid")
+        return False
+    else:
+        print("Network is generically globally rigid")
+        return True
+
