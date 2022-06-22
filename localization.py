@@ -166,7 +166,9 @@ class IterativeLocalization(NodeAlgorithm):
                 ]
                 if len(rigid_common) >= 2:
                     # localize neigh (trilaterate with initiator and two more nodes from rigid_common)
-                    (x1, y1), r1 = initiator.memory['position'], initiator.memory['neighborDistances'][neigh]
+                    (x1, y1), r1 = (
+                        initiator.memory['position'], initiator.memory['neighborDistances'][neigh]
+                    )
                     (x2, y2), r2 = rigid_segment[rigid_common[0][0]], rigid_common[0][1]
                     (x3, y3), r3 = rigid_segment[rigid_common[1][0]], rigid_common[1][1]
                     rigid_segment[neigh] = self.trilaterate(x1, y1, x2, y2, x3, y3, r1, r2, r3)
