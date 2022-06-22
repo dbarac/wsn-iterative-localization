@@ -206,7 +206,7 @@ def network_is_rigid(net):
 
 def network_is_generically_globaly_rigid(net):
     """
-    Test if a network is generically globally rigid, ie. localizable.
+    Test if a network is generically globally rigid (localizable).
     """
     remaining_nodes = set(net.nodes())
     edges = list(net.edges())
